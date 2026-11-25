@@ -6,10 +6,7 @@ import streamlit.components.v1 as components
 
 st.set_page_config(page_title="Aleta de resfriamento - seleção de material", layout="wide")
 st.title("Simulador de aleta de resfriamento — seleção de material")
-st.caption(
-    "Aleta tipo pino em regime permanente: problema de valor de contorno (PVC) "
-    "resolvido pela solução analítica e validado por diferenças finitas."
-)
+st.caption("Aleta tipo pino em regime permanente: problema de valor de contorno (PVC).")
 
 
 # ----------------------------- Utilidades de exibição -----------------------------
@@ -332,15 +329,15 @@ def svg_aletas(linhas, Tb, Tinf, h, D_mm, L_mm, ativo):
     yb = Hf - 34
     defs.append(
         '<linearGradient id="barra" x1="0" x2="1">'
-        + "".join(f'<stop offset="{t:.2f}" stop-color="{cor_T(t)}"/>' for t in np.linspace(0, 1, 11))
+        + "".join(f'<stop offset="{t:.2f}" stop-color="{cor_T(1 - t)}"/>' for t in np.linspace(0, 1, 11))
         + "</linearGradient>"
     )
     corpo.append(f'<rect x="300" y="{yb}" width="300" height="12" rx="3" fill="url(#barra)" stroke="#8f9eae"/>')
     corpo.append(
-        f'<text x="292" y="{yb + 11}" font-size="12" text-anchor="end" fill="#4a5a6a">T∞ = {Tinf:.1f} °C</text>'
+        f'<text x="292" y="{yb + 11}" font-size="12" text-anchor="end" fill="#4a5a6a">T_b = {Tb:.1f} °C</text>'
     )
     corpo.append(
-        f'<text x="608" y="{yb + 11}" font-size="12" fill="#4a5a6a">T_b = {Tb:.1f} °C</text>'
+        f'<text x="608" y="{yb + 11}" font-size="12" fill="#4a5a6a">T∞ = {Tinf:.1f} °C</text>'
     )
 
     # ar ambiente
@@ -371,6 +368,298 @@ def altura_svg(n):
     return topo + passo * (n - 1) + esp / 2 + 95
 
 
+# ----------------------------- Desenho do tanque com as aletas -----------------------------
+def dimensoes_tanque(M, rho, HD):
+    """Volume, diâmetro e altura de um tanque cilíndrico vertical cheio de solução."""
+    V = M / rho
+    Dt = (4.0 * V / (np.pi * HD)) ** (1.0 / 3.0)
+    return V, Dt, HD * Dt
+
+
+def arranjo_aletas(Na, Dt, Hf):
+    """Fileiras horizontais × aletas por fileira, com passos parecidos nas duas direções."""
+    nc = int(min(max(1, round(np.sqrt(Na * np.pi * Dt / Hf))), Na))
+    nr = int(np.ceil(Na / nc))
+    return nr, nc
+
+
+def grad_perfil(gid, x, T, Tb, Tinf, inverter=False):
+    """Gradiente com o perfil T(x) da aleta; inverter=True para aletas apontando para a esquerda."""
+    idx = np.linspace(0, len(x) - 1, 16).astype(int)
+    stops = "".join(
+        f'<stop offset="{x[i] / x[-1]:.4f}" stop-color="{cor_T((T[i] - Tinf) / (Tb - Tinf))}"/>'
+        for i in idx
+    )
+    x1, x2 = (1, 0) if inverter else (0, 1)
+    return f'<linearGradient id="{gid}" x1="{x1}" x2="{x2}" y1="0" y2="0">{stops}</linearGradient>'
+
+
+def svg_tanque(r, Tb, Tinf, D_mm, L_mm, Na, M, rho, HD):
+    """Vista lateral do tanque com as aletas, vista superior e detalhe ampliado."""
+    V, Dt, Ht = dimensoes_tanque(M, rho, HD)
+    R = Dt / 2.0
+    Df, Lf = D_mm / 1000.0, L_mm / 1000.0
+    Hf = 0.8 * Ht                                   # faixa aletada: 10 % a 90 % da altura
+    nr, nc = arranjo_aletas(Na, Dt, Hf)
+    Sv, Sc = Hf / nr, np.pi * Dt / nc
+    W, H = 900, 655
+    cor_parede = cor_T(1.0)
+    cor_ponta = cor_T((r["Tponta"] - Tinf) / (Tb - Tinf))
+
+    defs = [
+        grad_perfil("aD", r["x"], r["T"], Tb, Tinf),
+        grad_perfil("aE", r["x"], r["T"], Tb, Tinf, inverter=True),
+        '<linearGradient id="casco" x1="0" x2="1" y1="0" y2="0">'
+        '<stop offset="0" stop-color="#000" stop-opacity="0.35"/>'
+        '<stop offset="0.35" stop-color="#fff" stop-opacity="0.30"/>'
+        '<stop offset="0.6" stop-color="#fff" stop-opacity="0"/>'
+        '<stop offset="1" stop-color="#000" stop-opacity="0.40"/></linearGradient>',
+        '<pattern id="hach2" width="8" height="8" patternUnits="userSpaceOnUse" '
+        'patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="8" '
+        'stroke="#8f9eae" stroke-width="2.5"/></pattern>',
+        '<marker id="seta2" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="6" markerHeight="6" '
+        'orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#6b7a8a"/></marker>',
+    ]
+    c = []
+
+    # ---------------- vista lateral (elevação), em escala ----------------
+    s = min(400.0 / Ht, 330.0 / (Dt + 2.0 * Lf))    # px por metro
+    cx, Rs = 250.0, R * s
+    ry = Rs * 0.16                                  # elipse de perspectiva do topo/fundo
+    ytop = 105.0 + ry
+    ybot = ytop + Ht * s
+    t_px = max(Df * s, 1.2)                         # espessura desenhada (mínimo visível)
+
+    aletas = []
+    for k in range(Na):
+        lin, col = divmod(k, nc)
+        phi = 2.0 * np.pi * (col + 0.5 * (lin % 2)) / nc
+        yk = ybot - (0.1 * Ht + (lin + 0.5) * Sv) * s
+        aletas.append((np.cos(phi), np.sin(phi), yk))
+
+    def desenha_aleta(cphi, sphi, yk, frente):
+        xb = cx + Rs * sphi
+        proj = Lf * s * sphi
+        if abs(proj) >= 0.4:
+            gid = "aD" if proj > 0 else "aE"
+            c.append(
+                f'<rect x="{min(xb, xb + proj):.2f}" y="{yk - t_px / 2:.2f}" width="{abs(proj):.2f}" '
+                f'height="{t_px:.2f}" fill="url(#{gid})"/>'
+            )
+        if frente:
+            rx_ = max(Df * s / 2 * abs(cphi), 0.7)
+            c.append(
+                f'<ellipse cx="{xb + proj:.2f}" cy="{yk:.2f}" rx="{rx_:.2f}" ry="{max(Df * s / 2, 0.9):.2f}" '
+                f'fill="{cor_ponta}" stroke="#3b4a5a" stroke-width="0.4"/>'
+            )
+
+    # aletas de trás (o casco do tanque cobre o que fica atrás dele)
+    for cphi, sphi, yk in aletas:
+        if cphi < 0:
+            desenha_aleta(cphi, sphi, yk, False)
+
+    # casco cilíndrico
+    casco = (
+        f"M{cx - Rs:.1f} {ytop:.1f} V{ybot:.1f} "
+        f"A{Rs:.1f} {ry:.1f} 0 0 0 {cx + Rs:.1f} {ybot:.1f} V{ytop:.1f} "
+        f"A{Rs:.1f} {ry:.1f} 0 0 0 {cx - Rs:.1f} {ytop:.1f} Z"
+    )
+    c.append(f'<path d="{casco}" fill="{cor_parede}" opacity="0.92"/>')
+    c.append(f'<path d="{casco}" fill="url(#casco)"/>')
+    c.append(f'<path d="{casco}" fill="none" stroke="#3b4a5a" stroke-width="2"/>')
+    c.append(
+        f'<ellipse cx="{cx}" cy="{ytop:.1f}" rx="{Rs:.1f}" ry="{ry:.1f}" fill="#d9e1ea" '
+        f'stroke="#3b4a5a" stroke-width="2"/>'
+    )
+    # faixa aletada (limites tracejados)
+    for frac in (0.1, 0.9):
+        yl = ybot - frac * Ht * s
+        c.append(
+            f'<path d="M{cx - Rs:.1f} {yl:.1f} A{Rs:.1f} {ry:.1f} 0 0 0 {cx + Rs:.1f} {yl:.1f}" '
+            f'fill="none" stroke="#ffffff" stroke-width="1" stroke-dasharray="5 4" opacity="0.7"/>'
+        )
+
+    # aletas da frente
+    frente = sorted([a for a in aletas if a[0] >= 0], key=lambda a: a[0])
+    for cphi, sphi, yk in frente:
+        desenha_aleta(cphi, sphi, yk, True)
+
+    # cotas do tanque
+    xh = cx - Rs - Lf * s - 22
+    c.append(
+        f'<line x1="{xh:.1f}" y1="{ytop:.1f}" x2="{xh:.1f}" y2="{ybot:.1f}" stroke="#6b7a8a" '
+        f'stroke-width="1.2" marker-start="url(#seta2)" marker-end="url(#seta2)"/>'
+    )
+    c.append(
+        f'<text x="{xh - 6:.1f}" y="{(ytop + ybot) / 2:.1f}" font-size="12" text-anchor="middle" fill="#4a5a6a" '
+        f'transform="rotate(-90 {xh - 6:.1f} {(ytop + ybot) / 2:.1f})">H_t = {Ht:.2f} m</text>'
+    )
+    yd = ybot + ry + 20
+    c.append(
+        f'<line x1="{cx - Rs:.1f}" y1="{yd:.1f}" x2="{cx + Rs:.1f}" y2="{yd:.1f}" stroke="#6b7a8a" '
+        f'stroke-width="1.2" marker-start="url(#seta2)" marker-end="url(#seta2)"/>'
+    )
+    c.append(
+        f'<text x="{cx}" y="{yd + 16:.1f}" font-size="12" text-anchor="middle" fill="#4a5a6a">'
+        f"D_t = {Dt:.2f} m</text>"
+    )
+    c.append(
+        f'<text x="{cx}" y="{yd + 32:.1f}" font-size="11" text-anchor="middle" fill="#6b7a8a">'
+        f"Vista lateral em escala (espessura mínima visível para aletas finas)</text>"
+    )
+
+    # região do detalhe marcada na vista lateral
+    ydet = ybot - 0.5 * Ht * s
+    hdet = min(max(3 * Sv * s, 16), 60)
+    wdet = max(Lf * s + 10, 18)
+    xdet = cx + Rs - 5
+    c.append(
+        f'<rect x="{xdet:.1f}" y="{ydet - hdet / 2:.1f}" width="{wdet:.1f}" height="{hdet:.1f}" '
+        f'fill="none" stroke="#1f4e9a" stroke-width="1.5" stroke-dasharray="4 3"/>'
+    )
+
+    # títulos
+    c.append(
+        '<text x="20" y="28" font-size="14" font-weight="700" fill="#1f2a37">'
+        "Tanque de mistura com as aletas</text>"
+    )
+    c.append(
+        f'<text x="20" y="47" font-size="12" fill="#4a5a6a">V = {V:.2f} m³ '
+        f"(M = {M:.0f} kg · ρ = {rho:.0f} kg/m³) · H/D = {HD:.2f}</text>"
+    )
+    c.append(
+        f'<text x="20" y="64" font-size="12" fill="#4a5a6a">{Na} aleta{"s" if Na > 1 else ""} de {r["nome"]} · '
+        f'{nr} fileira{"s" if nr > 1 else ""} × {nc} por fileira'
+        f'{" (fileiras alternadas defasadas)" if nr > 1 else ""}</text>'
+    )
+
+    # ---------------- vista superior (planta) ----------------
+    pcx, pcy, Rp = 730.0, 160.0, 72.0
+    sp = Rp / R
+    lp = max(Lf * sp, 3.0)
+    tp = max(Df * sp, 1.0)
+    c.append(
+        f'<text x="{pcx}" y="28" font-size="13" font-weight="700" text-anchor="middle" fill="#1f2a37">'
+        f"Vista superior</text>"
+    )
+    for col in range(nc):
+        phi = 2.0 * np.pi * col / nc
+        x1_, y1_ = pcx + Rp * np.sin(phi), pcy - Rp * np.cos(phi)
+        x2_, y2_ = pcx + (Rp + lp) * np.sin(phi), pcy - (Rp + lp) * np.cos(phi)
+        gid = f"pl{col}"
+        defs.append(
+            f'<linearGradient id="{gid}" gradientUnits="userSpaceOnUse" x1="{x1_:.2f}" y1="{y1_:.2f}" '
+            f'x2="{x2_:.2f}" y2="{y2_:.2f}"><stop offset="0" stop-color="{cor_parede}"/>'
+            f'<stop offset="1" stop-color="{cor_ponta}"/></linearGradient>'
+        )
+        c.append(
+            f'<line x1="{x1_:.2f}" y1="{y1_:.2f}" x2="{x2_:.2f}" y2="{y2_:.2f}" '
+            f'stroke="url(#{gid})" stroke-width="{tp:.2f}"/>'
+        )
+    c.append(
+        f'<circle cx="{pcx}" cy="{pcy}" r="{Rp}" fill="{cor_parede}" opacity="0.92" stroke="#3b4a5a" stroke-width="2"/>'
+    )
+    c.append(f'<circle cx="{pcx}" cy="{pcy}" r="{Rp - 5}" fill="#d9e1ea" stroke="#3b4a5a" stroke-width="1"/>')
+    c.append(
+        f'<text x="{pcx}" y="{pcy + Rp + lp + 20:.1f}" font-size="12" text-anchor="middle" fill="#4a5a6a">'
+        f'{nc} aleta{"s" if nc > 1 else ""} por fileira · passo circunferencial = {Sc * 1000:.1f} mm</text>'
+    )
+
+    # ---------------- detalhe ampliado ----------------
+    bx, by, bw, bh = 560.0, 285.0, 320.0, 250.0
+    c.append(
+        f'<rect x="{bx}" y="{by}" width="{bw}" height="{bh}" rx="8" fill="#ffffff" stroke="#1f4e9a" '
+        f'stroke-width="1.5" stroke-dasharray="4 3"/>'
+    )
+    c.append(
+        f'<line x1="{xdet + wdet:.1f}" y1="{ydet:.1f}" x2="{bx:.1f}" y2="{by + bh / 2:.1f}" '
+        f'stroke="#1f4e9a" stroke-width="1" stroke-dasharray="4 3"/>'
+    )
+    c.append(
+        f'<text x="{bx + 12}" y="{by + 20}" font-size="13" font-weight="700" fill="#1f2a37">'
+        f"Detalhe ampliado (corte da parede)</text>"
+    )
+    nd = int(min(3, nr))
+    sd = min(160.0 / Lf, 40.0 / Df)                 # escala do detalhe pelo comprimento da aleta
+    gap = Sv * sd                                   # passo vertical na escala do detalhe
+    fora_escala = gap > 75.0
+    if fora_escala:
+        gap = 75.0                                  # passo grande: desenhado encurtado
+    xw = bx + 40
+    yc0 = by + 127
+    c.append(f'<rect x="{xw - 22}" y="{by + 44}" width="22" height="{bh - 59}" fill="{cor_parede}" opacity="0.9"/>')
+    c.append(f'<rect x="{xw - 22}" y="{by + 44}" width="22" height="{bh - 59}" fill="url(#hach2)" opacity="0.35"/>')
+    c.append(f'<line x1="{xw}" y1="{by + 44}" x2="{xw}" y2="{by + bh - 15}" stroke="#3b4a5a" stroke-width="2.5"/>')
+    ys = [yc0 + (j - (nd - 1) / 2) * gap for j in range(nd)]
+    td = max(Df * sd, 1.5)
+    for yj in ys:
+        c.append(
+            f'<rect x="{xw}" y="{yj - td / 2:.2f}" width="{Lf * sd:.2f}" height="{td:.2f}" '
+            f'fill="url(#aD)" stroke="#3b4a5a" stroke-width="0.8"/>'
+        )
+    # cotas do detalhe
+    y_l = ys[-1] + td / 2 + 16
+    c.append(
+        f'<line x1="{xw}" y1="{y_l:.1f}" x2="{xw + Lf * sd:.1f}" y2="{y_l:.1f}" stroke="#6b7a8a" '
+        f'stroke-width="1.2" marker-start="url(#seta2)" marker-end="url(#seta2)"/>'
+    )
+    c.append(
+        f'<text x="{xw + Lf * sd / 2:.1f}" y="{y_l + 15:.1f}" font-size="12" text-anchor="middle" '
+        f'fill="#4a5a6a">L = {L_mm:.1f} mm</text>'
+    )
+    xt = xw + Lf * sd + 8
+    c.append(
+        f'<text x="{xt:.1f}" y="{ys[0] + 4:.1f}" font-size="12" fill="#4a5a6a">D = {D_mm:.1f} mm</text>'
+    )
+    if nd > 1:
+        xs_ = xt + 4
+        c.append(
+            f'<line x1="{xs_:.1f}" y1="{ys[-2]:.1f}" x2="{xs_:.1f}" y2="{ys[-1]:.1f}" stroke="#6b7a8a" '
+            f'stroke-width="1.2" marker-start="url(#seta2)" marker-end="url(#seta2)"/>'
+        )
+        c.append(
+            f'<text x="{xs_ + 6:.1f}" y="{(ys[-2] + ys[-1]) / 2 - 3:.1f}" font-size="12" fill="#4a5a6a">'
+            f"passo vertical</text>"
+        )
+        c.append(
+            f'<text x="{xs_ + 6:.1f}" y="{(ys[-2] + ys[-1]) / 2 + 12:.1f}" font-size="12" fill="#4a5a6a">'
+            f"= {Sv * 1000:.1f} mm</text>"
+        )
+        if fora_escala:
+            c.append(
+                f'<text x="{bx + 12}" y="{by + 36}" font-size="11" fill="#6b7a8a">'
+                f"(passo vertical encurtado no desenho)</text>"
+            )
+            for j in range(nd - 1):
+                ym = (ys[j] + ys[j + 1]) / 2
+                c.append(
+                    f'<path d="M{xw - 28} {ym - 4:.1f} l8 -4 l8 8 l8 -8 l8 8 l8 -4" fill="none" '
+                    f'stroke="#3b4a5a" stroke-width="1.5"/>'
+                )
+
+    # barra de cores (T_b à esquerda, como na figura das aletas)
+    yb = H - 26
+    defs.append(
+        '<linearGradient id="barra2" x1="0" x2="1">'
+        + "".join(f'<stop offset="{t:.2f}" stop-color="{cor_T(1 - t)}"/>' for t in np.linspace(0, 1, 11))
+        + "</linearGradient>"
+    )
+    c.append(f'<rect x="300" y="{yb}" width="300" height="12" rx="3" fill="url(#barra2)" stroke="#8f9eae"/>')
+    c.append(
+        f'<text x="292" y="{yb + 11}" font-size="12" text-anchor="end" fill="#4a5a6a">T_b = {Tb:.1f} °C</text>'
+    )
+    c.append(f'<text x="608" y="{yb + 11}" font-size="12" fill="#4a5a6a">T∞ = {Tinf:.1f} °C</text>')
+
+    svg = (
+        f'<svg viewBox="0 0 {W} {H}" style="width:100%;max-width:900px;display:block;margin:auto" '
+        f'xmlns="http://www.w3.org/2000/svg" font-family="sans-serif"><defs>{"".join(defs)}</defs>'
+        f'<rect width="{W}" height="{H}" rx="12" fill="#f4f7fb" stroke="#d5dde8"/>'
+        f'{"".join(c)}</svg>'
+    )
+    info = dict(V=V, Dt=Dt, Ht=Ht, nr=nr, nc=nc, Sv=Sv, Sc=Sc)
+    return svg, H, info
+
+
 # ----------------------------- Sidebar -----------------------------
 st.sidebar.header("Tipo de simulação")
 modo = st.sidebar.radio(
@@ -392,6 +681,11 @@ h = st.sidebar.number_input(
 ponta = st.sidebar.radio("Condição na ponta (x = L)", ["Convecção na ponta", "Ponta adiabática"])
 ponta_conv = ponta == "Convecção na ponta"
 Na = st.sidebar.number_input("Número de aletas", min_value=1, max_value=10000, value=100, step=10)
+
+st.sidebar.header("Tanque (figura no fim da página)")
+M_t = st.sidebar.number_input("Massa de solução no tanque M (kg)", min_value=1.0, value=5000.0, step=100.0)
+rho_t = st.sidebar.number_input("Massa específica da solução ρ (kg/m³)", min_value=500.0, value=1110.0, step=10.0)
+HD_t = st.sidebar.number_input("Razão altura/diâmetro do tanque H/D", min_value=0.3, max_value=5.0, value=1.5, step=0.1)
 
 lista_mat = materiais[C_MAT].astype(str).tolist()
 
@@ -434,7 +728,10 @@ if calcular:
         st.session_state["res"] = {"erro": erro}
     else:
         D, L = D_mm / 1000.0, L_mm / 1000.0
-        params = dict(D_mm=D_mm, L_mm=L_mm, Tb=Tb, Tinf=Tinf, h=h, ponta=ponta, Na=int(Na), N=N)
+        params = dict(
+            D_mm=D_mm, L_mm=L_mm, Tb=Tb, Tinf=Tinf, h=h, ponta=ponta, Na=int(Na), N=N,
+            M_t=M_t, rho_t=rho_t, HD_t=HD_t,
+        )
         if modo == "Aleta única":
             linha = materiais[materiais[C_MAT].astype(str) == mat_sel].iloc[0]
             r = avaliar(linha, D, L, h, Tb, Tinf, ponta_conv, N, int(Na))
@@ -701,3 +998,29 @@ else:
     biq = [r for r in lista if r["Bi"] > 0.1]
     if biq:
         st.warning("Bi > 0,1 para: " + ", ".join(r["nome"] for r in biq) + " — a hipótese 1D fica questionável.")
+
+# ============================= TANQUE COM AS ALETAS =============================
+st.divider()
+st.subheader("Tanque de mistura com as aletas")
+if modo == "Aleta única":
+    r_fig = res["r"]
+else:
+    r_fig = lista[0]
+    if len(aptos) > 0:
+        r_fig = next(r for r in lista if r["nome"] == melhor["Material"])
+M_t = p.get("M_t", 5000.0)
+rho_t = p.get("rho_t", 1110.0)
+HD_t = p.get("HD_t", 1.5)
+svg_t, alt_t, inf_t = svg_tanque(r_fig, p["Tb"], p["Tinf"], p["D_mm"], p["L_mm"], p["Na"], M_t, rho_t, HD_t)
+mostrar_svg(svg_t, alt_t)
+st.caption(
+    f"Tanque cilíndrico vertical com a massa de solução do simulador do tanque de mistura "
+    f"(M = {M_t:.0f} kg, ρ = {rho_t:.0f} kg/m³ → V = {inf_t['V']:.2f} m³), "
+    f"D_t = {inf_t['Dt']:.2f} m e H_t = {inf_t['Ht']:.2f} m. As {p['Na']} aletas ficam entre 10 % e 90 % "
+    f"da altura, em {inf_t['nr']} fileiras de {inf_t['nc']} aletas"
+    + (" (material recomendado na comparação)." if modo != "Aleta única" else ".")
+)
+if min(inf_t["Sv"], inf_t["Sc"]) < p["D_mm"] / 1000.0:
+    st.error("As aletas não cabem na parede com esse diâmetro: o passo ficou menor que D.")
+elif min(inf_t["Sv"], inf_t["Sc"]) < 2 * p["D_mm"] / 1000.0:
+    st.warning("Aletas muito próximas (passo < 2D): a hipótese de h uniforme fica questionável.")
